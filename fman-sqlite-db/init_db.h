@@ -1,7 +1,12 @@
 #ifndef INIT_DB_H
 #define INIT_DB_H
 
-// Function to initialize the database and execute the SQL script
-int init_database(const char *db_name, const char *sql_file);
+#include <sqlite3.h>
 
-#endif // INIT_DB_H
+/**
+ * Reads the given SQL file and executes it on `db`.
+ * Returns SQLITE_OK on success, or an SQLite error code.
+ */
+int initialize_db(const char *sql_filename, sqlite3 *db);
+
+#endif /* INIT_DB_H */

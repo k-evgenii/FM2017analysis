@@ -1,17 +1,30 @@
 #include <stdio.h>
-#include <stdlib.h>
+#include <sqlite3.h>
 #include "init_db.h"
 
-int main() {
-    const char *db_name = "football_manager.db";
-    const char *sql_file = "initialise_db.sql";
-
-    // Initialize the database
-    if (init_database(db_name, sql_file) != 0) {
-        fprintf(stderr, "Failed to initialize the database\n");
-        return 1;
+int main(void) {
+    sqlite3 *db;
+    int rc = sqlite3_open("fm.db", &db);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
+        return rc;
     }
 
-    printf("Database initialized successfully\n");
-    return 0; // Success
+    // Ensure foreign-key constraints
+    sqlite3_exec(db,
+        "PRAGMA foreign_keys = ON;",
+        NULL, NULL, NULL);
+
+    // Initialize schema (creates tables IF NOT EXISTS, commits at end)
+    rc = initialize_db("initialise_db.sql", db);
+    if (rc != SQLITE_OK) {
+        sqlite3_close(db);
+        return rc;
+    }
+
+    // --- at this point your DB is ready ---
+    printf("Database initialized and ready to go!\n");
+
+    sqlite3_close(db);
+    return 0;
 }
