@@ -1,111 +1,17 @@
 #!/usr/bin/env python3
 """
-CSV to SQLite Database Importer (OOP Version)
-Flexible script to import CSV files into SQLite database with automatic table creation
-""" #just a prototype for the script, so nothing properly works yet, use as a base to set up a csv importer
+CSV to Database Importer (OOP Version with Abstract Base Classes)
+Flexible script to import CSV files into any database with automatic table creation
+Supports SQLite, MySQL, PostgreSQL, etc. through DatabaseConnection interface
+"""
 
-import sqlite3
 import csv
-import os
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import re
+from database_abc import DatabaseConnection, create_database_connection
 
-
-class DatabaseManager:
-    """Manages SQLite database connection and operations"""
-    
-    def __init__(self, db_path: str):
-        """
-        Initialize database manager
-        
-        Args:
-            db_path: Path to SQLite database file
-        """
-        self.db_path = Path(db_path)
-        self.connection: Optional[sqlite3.Connection] = None
-        self.cursor: Optional[sqlite3.Cursor] = None
-        
-    def connect(self) -> None:
-        """Establish connection to database"""
-        self.connection = sqlite3.connect(str(self.db_path))
-        self.cursor = self.connection.cursor()
-        print(f"✓ Connected to database: {self.db_path}")
-        
-    def disconnect(self) -> None:
-        """Close database connection"""
-        if self.connection:
-            self.connection.commit()
-            self.connection.close()
-            print("✓ Database connection closed")
-            
-    def execute_script(self, sql_file: Path) -> None:
-        """Execute SQL script from file"""
-        if not sql_file.exists():
-            raise FileNotFoundError(f"SQL script not found: {sql_file}")
-            
-        with open(sql_file, 'r', encoding='utf-8') as f:
-            sql_script = f.read()
-            
-        self.cursor.executescript(sql_script)
-        self.connection.commit()
-        print(f"✓ Executed SQL script: {sql_file.name}")
-        
-    def table_exists(self, table_name: str) -> bool:
-        """Check if table exists in database"""
-        query = "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
-        result = self.cursor.execute(query, (table_name,)).fetchone()
-        return result is not None
-        
-    def get_table_columns(self, table_name: str) -> List[str]:
-        """Get list of column names for a table"""
-        query = f"PRAGMA table_info({table_name})"
-        columns = self.cursor.execute(query).fetchall()
-        return [col[1] for col in columns]  # col[1] is the column name
-        
-    def create_table(self, table_name: str, columns: List[Dict[str, str]]) -> None:
-        """
-        Create a new table with specified columns
-        
-        Args:
-            table_name: Name of the table to create
-            columns: List of dicts with 'name' and 'type' keys
-        """
-        column_defs = [f'"{col["name"]}" {col["type"]}' for col in columns]
-        
-        # Add an auto-increment ID if not present
-        has_id = any(col['name'].lower() in ['id', f'{table_name}_id'] for col in columns)
-        if not has_id:
-            column_defs.insert(0, f'{table_name}_id INTEGER PRIMARY KEY AUTOINCREMENT')
-            
-        create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} (\n    {',\n    '.join(column_defs)}\n);"
-        
-        self.cursor.execute(create_sql)
-        self.connection.commit()
-        print(f"✓ Created table: {table_name}")
-        
-    def insert_rows(self, table_name: str, columns: List[str], rows: List[List]) -> int:
-        """
-        Insert multiple rows into table
-        
-        Args:
-            table_name: Name of the table
-            columns: List of column names
-            rows: List of row data
-            
-        Returns:
-            Number of rows inserted
-        """
-        placeholders = ','.join(['?' for _ in columns])
-        column_names = ','.join([f'"{col}"' for col in columns])
-        
-        insert_sql = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
-        
-        self.cursor.executemany(insert_sql, rows)
-        self.connection.commit()
-        
-        return len(rows)
 
 
 class CSVAnalyzer:
@@ -242,27 +148,27 @@ class CSVAnalyzer:
 
 
 class CSVImporter:
-    """Main class for importing CSV data to SQLite"""
+    """Main class for importing CSV data to any database using DatabaseConnection"""
     
     MODE_AUTO = 'auto'          # Auto-detect and create/match table
     MODE_CREATE = 'create'      # Force create new table
     MODE_MATCH = 'match'        # Match existing table columns
     MODE_APPEND = 'append'      # Append to existing table
     
-    def __init__(self, db_path: str, csv_path: str):
+    def __init__(self, db_connection: DatabaseConnection, csv_path: str, table_name: str):
         """
         Initialize CSV importer
         
         Args:
-            db_path: Path to SQLite database
+            db_connection: DatabaseConnection instance (SQLite, MySQL, etc.)
             csv_path: Path to CSV file
+            table_name: Name of target table
         """
-        self.db_manager = DatabaseManager(db_path)
+        self.db_connection: DatabaseConnection = db_connection
         self.csv_analyzer = CSVAnalyzer(csv_path)
-        self.table_name: Optional[str] = None
+        self.table_name: str = table_name
         
     def import_csv(self, 
-                   table_name: str, 
                    mode: str = MODE_AUTO,
                    init_script: Optional[str] = None,
                    modify_script: Optional[str] = None) -> None:
@@ -270,34 +176,36 @@ class CSVImporter:
         Import CSV data to database
         
         Args:
-            table_name: Name of target table
             mode: Import mode ('auto', 'create', 'match', 'append')
             init_script: Optional path to initialization SQL script
             modify_script: Optional path to modification SQL script
         """
-        self.table_name = table_name
-        
         print("\n" + "="*60)
-        print("CSV to SQLite Import")
+        print("CSV to Database Import")
         print("="*60)
         print(f"CSV File: {self.csv_analyzer.csv_path}")
-        print(f"Database: {self.db_manager.db_path}")
-        print(f"Table: {table_name}")
+        print(f"Database: {self.db_connection.db_path}")
+        print(f"Table: {self.table_name}")
         print(f"Mode: {mode}")
         print("="*60 + "\n")
         
         # Connect to database
-        self.db_manager.connect()
+        self.db_connection.connect()
         
         try:
-            # Check if we need to initialize database
-            if not self.db_manager.db_path.exists() or self.db_manager.db_path.stat().st_size == 0:
+            # Check if we need to initialize database (SQLite only)
+            db_path = Path(self.db_connection.db_path)
+            if db_path.exists() and (not db_path.stat().st_size or db_path.stat().st_size == 0):
                 if init_script:
                     print("Database is empty. Running initialization script...")
-                    self.db_manager.execute_script(Path(init_script))
+                    with open(init_script, 'r', encoding='utf-8') as f:
+                        sql_script = f.read()
+                    self.db_connection.execute_script(sql_script)
                     if modify_script:
                         print("Running modification script...")
-                        self.db_manager.execute_script(Path(modify_script))
+                        with open(modify_script, 'r', encoding='utf-8') as f:
+                            sql_script = f.read()
+                        self.db_connection.execute_script(sql_script)
                         
             # Analyze CSV
             csv_columns = self.csv_analyzer.analyze()
@@ -315,7 +223,7 @@ class CSVImporter:
                 raise ValueError(f"Unknown mode: {mode}")
                 
         finally:
-            self.db_manager.disconnect()
+            self.db_connection.disconnect()
             
         print("\n" + "="*60)
         print("✓ Import completed successfully!")
@@ -323,7 +231,7 @@ class CSVImporter:
         
     def _import_auto(self, csv_columns: List[Dict[str, str]]) -> None:
         """Auto mode: detect and handle appropriately"""
-        if self.db_manager.table_exists(self.table_name):
+        if self.db_connection.table_exists(self.table_name):
             print(f"Table '{self.table_name}' exists. Checking column compatibility...")
             self._import_match(csv_columns)
         else:
@@ -332,29 +240,31 @@ class CSVImporter:
             
     def _import_create(self, csv_columns: List[Dict[str, str]]) -> None:
         """Create mode: create new table and import"""
-        if self.db_manager.table_exists(self.table_name):
+        if self.db_connection.table_exists(self.table_name):
             print(f"WARNING: Table '{self.table_name}' already exists.")
             response = input("Drop and recreate? (y/N): ")
             if response.lower() == 'y':
-                self.db_manager.cursor.execute(f"DROP TABLE {self.table_name}")
-                self.db_manager.connection.commit()
+                # Use execute_query to drop table
+                drop_query = f"DROP TABLE {self.table_name}"
+                self.db_connection.execute_query(drop_query)
+                self.db_connection.commit()
                 print(f"✓ Dropped table: {self.table_name}")
             else:
                 print("Import cancelled.")
                 return
                 
         # Create table
-        self.db_manager.create_table(self.table_name, csv_columns)
+        self.db_connection.create_table(self.table_name, csv_columns)
         
         # Import data
         self._insert_data(csv_columns)
         
     def _import_match(self, csv_columns: List[Dict[str, str]]) -> None:
         """Match mode: match CSV columns to existing table"""
-        if not self.db_manager.table_exists(self.table_name):
+        if not self.db_connection.table_exists(self.table_name):
             raise ValueError(f"Table '{self.table_name}' does not exist. Use 'create' or 'auto' mode.")
             
-        db_columns = self.db_manager.get_table_columns(self.table_name)
+        db_columns = self.db_connection.get_table_columns(self.table_name)
         csv_col_names = [col['name'] for col in csv_columns]
         
         # Find matching columns
@@ -381,10 +291,10 @@ class CSVImporter:
         
     def _import_append(self, csv_columns: List[Dict[str, str]]) -> None:
         """Append mode: append to existing table (all columns must match)"""
-        if not self.db_manager.table_exists(self.table_name):
+        if not self.db_connection.table_exists(self.table_name):
             raise ValueError(f"Table '{self.table_name}' does not exist. Use 'create' or 'auto' mode.")
             
-        db_columns = self.db_manager.get_table_columns(self.table_name)
+        db_columns = self.db_connection.get_table_columns(self.table_name)
         csv_col_names = [col['name'] for col in csv_columns]
         
         # Check if all CSV columns exist in DB
@@ -433,7 +343,7 @@ class CSVImporter:
         
         for i in range(0, len(rows), batch_size):
             batch = rows[i:i+batch_size]
-            inserted = self.db_manager.insert_rows(self.table_name, columns_to_insert, batch)
+            inserted = self.db_connection.insert_rows(self.table_name, columns_to_insert, batch)
             total_inserted += inserted
             print(f"  Progress: {total_inserted}/{len(rows)} rows")
             
@@ -445,26 +355,48 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='Import CSV data to SQLite database with flexible table handling',
+        description='Import CSV data to database with flexible table handling',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Auto mode - detect and handle appropriately
+  # SQLite - Auto mode
   python csv_importer.py --csv data.csv --db mydb.db --table players --mode auto
   
-  # Create new table from CSV
+  # SQLite - Create new table from CSV
   python csv_importer.py --csv data.csv --db mydb.db --table players --mode create
   
-  # Match columns with existing table
+  # SQLite - Match columns with existing table
   python csv_importer.py --csv data.csv --db mydb.db --table players --mode match
   
+  # MySQL - Import to MySQL database
+  python csv_importer.py --csv data.csv --db-type mysql --db mydb --table players \\
+      --host localhost --user root --password mypass
+  
   # Initialize DB first, then import
-  python csv_importer.py --csv data.csv --db mydb.db --table players --init initialise_db.sql --modify modify_db.sql
+  python csv_importer.py --csv data.csv --db mydb.db --table players \\
+      --init initialise_db.sql --modify modify_db.sql
         """
     )
     
     parser.add_argument('--csv', required=True, help='Path to CSV file')
-    parser.add_argument('--db', required=True, help='Path to SQLite database')
+    parser.add_argument('--db', required=True, help='Database name/path')
+    parser.add_argument('--db-type',
+                       choices=['sqlite', 'mysql'],
+                       default='sqlite',
+                       help='Database type (default: sqlite)')
+    parser.add_argument('--host',
+                       default='localhost',
+                       help='Database host (for MySQL, default: localhost)')
+    parser.add_argument('--port',
+                       type=int,
+                       default=3306,
+                       help='Database port (for MySQL, default: 3306)')
+    parser.add_argument('--user',
+                       default='root',
+                       help='Database user (for MySQL, default: root)')
+    parser.add_argument('--password',
+                       default='',
+                       help='Database password (for MySQL)')
     parser.add_argument('--table', required=True, help='Target table name')
     parser.add_argument('--mode', 
                        choices=['auto', 'create', 'match', 'append'],
@@ -475,10 +407,23 @@ Examples:
     
     args = parser.parse_args()
     
+    # Create database connection based on type
+    if args.db_type == 'sqlite':
+        db_conn = create_database_connection('sqlite', db_path=args.db)
+    elif args.db_type == 'mysql':
+        db_conn = create_database_connection('mysql',
+                                            db_path=args.db,
+                                            host=args.host,
+                                            port=args.port,
+                                            user=args.user,
+                                            password=args.password)
+    else:
+        print(f"ERROR: Unsupported database type: {args.db_type}")
+        return 1
+    
     # Create importer and run
-    importer = CSVImporter(args.db, args.csv)
+    importer = CSVImporter(db_conn, args.csv, args.table)
     importer.import_csv(
-        table_name=args.table,
         mode=args.mode,
         init_script=args.init,
         modify_script=args.modify
