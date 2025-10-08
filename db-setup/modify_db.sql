@@ -7,8 +7,8 @@ ALTER TABLE positions RENAME TO positions_old;
 CREATE TABLE positions (
     player_id  INTEGER NOT NULL,
     team_id    INTEGER NOT NULL,
-    position   VARCHAR(5) NOT NULL,
-    PRIMARY KEY (player_id, team_id, position),
+    "position" VARCHAR(5) NOT NULL,
+    PRIMARY KEY (player_id, team_id, "position"),
     FOREIGN KEY (player_id)
         REFERENCES players(player_id)
         ON DELETE CASCADE,
@@ -17,8 +17,8 @@ CREATE TABLE positions (
         ON DELETE CASCADE
 );
 
-INSERT INTO positions (player_id, team_id, position)
-SELECT player_id, team_id, position FROM positions_old;
+INSERT INTO positions (player_id, team_id, "position")
+SELECT player_id, team_id, "position" FROM positions_old;
 DROP TABLE positions_old;
 
 
@@ -62,8 +62,9 @@ CREATE TABLE loans (
         ON DELETE CASCADE
 );
 
-INSERT INTO loans (loan_id, player_id, loaning_team_id, receiving_team_id, loan_expires)
-SELECT loan_id, player_id, loaning_team_id, receiving_team_id, loan_expires
+-- Note: loan_id will be auto-generated, so we don't include it in the INSERT
+INSERT INTO loans (player_id, loaning_team_id, receiving_team_id, loan_expires)
+SELECT player_id, loaning_team_id, receiving_team_id, loan_expires
   FROM loans_old;
 DROP TABLE loans_old;
 
