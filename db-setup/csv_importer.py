@@ -11,6 +11,8 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import re
 from database_abc import DatabaseConnection, create_database_connection
+import importlib.util
+import sys
 
 
 
@@ -348,6 +350,168 @@ class CSVImporter:
             print(f"  Progress: {total_inserted}/{len(rows)} rows")
             
         print(f"✓ Inserted {total_inserted} rows")
+
+    def categorical_variable_import(self,
+                                    csv_column: str,
+                                    variable_description: str,
+                                    target_table: str,
+                                    csv_uid_column: Optional[str] = None) -> None:
+        """
+        Import categorical variable from CSV into a target table using a mapping.
+
+        Args:
+            csv_column: Column name in the CSV that contains the categorical text (e.g. PositionsDesc)
+            variable_description: Path to a Python script that produces a mapping dict OR will be ignored and mapping generated from CSV
+            target_table: Table name in DB to insert rows into (e.g. 'positions')
+            csv_uid_column: Optional CSV column that contains an external player id (e.g. 'UID'). If omitted, will try to match by Name.
+        """
+        # Load or generate mapping dict from variable_description
+        mapping = {}
+        var_path = Path(variable_description)
+        if var_path.exists():
+            try:
+                spec = importlib.util.spec_from_file_location("var_desc", str(var_path))
+                if spec is None or spec.loader is None:
+                    raise ImportError("Could not load spec from variable description file")
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules["var_desc"] = mod
+                spec.loader.exec_module(mod)  # type: ignore
+                # look for common names
+                if hasattr(mod, 'pos_map1'):
+                    mapping = getattr(mod, 'pos_map1')
+                elif hasattr(mod, 'pos_map'):
+                    mapping = getattr(mod, 'pos_map')
+                elif hasattr(mod, 'get_mapping'):
+                    mapping = getattr(mod, 'get_mapping')()
+                else:
+                    print("Variable description script didn't expose a mapping; will infer from CSV")
+                    mapping = {}
+            except Exception as e:
+                print(f"Failed to load variable description: {e}; will infer mapping from CSV")
+                mapping = {}
+        else:
+            print("Variable description file not found; inferring mapping from CSV")
+
+        # Read CSV and extract the two columns we need
+        headers, rows = self.csv_analyzer.read_all_data()
+        sanitized_headers = [self.csv_analyzer._sanitize_column_name(h) for h in headers]
+
+        # Determine indices
+        try:
+            col_idx = sanitized_headers.index(self.csv_analyzer._sanitize_column_name(csv_column))
+        except ValueError:
+            raise ValueError(f"CSV column not found: {csv_column}")
+
+        uid_idx = None
+        if csv_uid_column:
+            if self.csv_analyzer._sanitize_column_name(csv_uid_column) in sanitized_headers:
+                uid_idx = sanitized_headers.index(self.csv_analyzer._sanitize_column_name(csv_uid_column))
+        else:
+            # try common names
+            for candidate in ['uid', 'player_id', 'playerid', 'id', 'name']:
+                if candidate in sanitized_headers:
+                    uid_idx = sanitized_headers.index(candidate)
+                    break
+
+        # If mapping is empty, infer mapping from CSV column values
+        if not mapping:
+            unique_positions = set()
+            for row in rows:
+                cell = row[col_idx] if col_idx < len(row) else ''
+                if not cell:
+                    continue
+                for combination in str(cell).split('/'):
+                    for token in combination.split():
+                        unique_positions.add(token)
+            mapping = {pos: idx+1 for idx, pos in enumerate(sorted(unique_positions))}
+            print(f"Inferred mapping with {len(mapping)} categories")
+
+        # Connect to DB and prepare lookups
+        self.db_connection.connect()
+        try:
+            # discover players table columns to choose lookup strategy
+            player_cols = self.db_connection.get_table_columns('players') if self.db_connection.table_exists('players') else []
+
+            batch_size = 1000
+            batch: List[List] = []
+            seen = set()
+            total_inserted = 0
+
+            for ridx, row in enumerate(rows, start=1):
+                cell = row[col_idx] if col_idx < len(row) else ''
+                if not cell:
+                    continue
+
+                # resolve player_id
+                player_id = None
+                if uid_idx is not None and uid_idx < len(row):
+                    uid_val = row[uid_idx]
+                    candidates = [c for c in player_cols if 'uid' in c.lower() or 'ext' in c.lower() or c.lower() == 'player_id']
+                    if candidates:
+                        candidate = candidates[0]
+                        q = f"SELECT player_id FROM players WHERE {candidate} = ? LIMIT 1"
+                        res = self.db_connection.execute_query(q, (uid_val,))
+                        if res:
+                            player_id = res[0][0]
+
+                if player_id is None:
+                    name_idx = None
+                    if 'name' in sanitized_headers:
+                        name_idx = sanitized_headers.index('name')
+                    if name_idx is not None and name_idx < len(row):
+                        name_val = row[name_idx]
+                        q = "SELECT player_id FROM players WHERE name = ? LIMIT 1"
+                        res = self.db_connection.execute_query(q, (name_val,))
+                        if res:
+                            player_id = res[0][0]
+
+                if player_id is None:
+                    continue
+
+                # split cell into tokens and prepare inserts
+                for combination in str(cell).split('/'):
+                    for token in combination.split():
+                        token = token.strip()
+                        if not token:
+                            continue
+                        mapped = mapping.get(token)
+                        if mapped is None:
+                            continue
+                        position_value = str(mapped)
+                        team_id = 0
+                        key = (player_id, team_id, position_value)
+                        if key in seen:
+                            continue
+
+                        # check database to avoid duplicates
+                        q = "SELECT 1 FROM {tbl} WHERE player_id = ? AND team_id = ? AND position = ?".format(tbl=target_table)
+                        exists = self.db_connection.execute_query(q, (player_id, team_id, position_value))
+                        if exists:
+                            seen.add(key)
+                            continue
+
+                        seen.add(key)
+                        batch.append([player_id, team_id, position_value])
+
+                        # flush batch
+                        if len(batch) >= batch_size:
+                            inserted = self.db_connection.insert_rows(target_table, ['player_id', 'team_id', 'position'], batch)
+                            total_inserted += inserted
+                            print(f"  Progress: inserted {total_inserted} rows (processed {ridx}/{len(rows)})")
+                            batch.clear()
+
+            # final flush
+            if batch:
+                inserted = self.db_connection.insert_rows(target_table, ['player_id', 'team_id', 'position'], batch)
+                total_inserted += inserted
+
+            if total_inserted:
+                print(f"Inserted {total_inserted} categorical rows into {target_table}")
+            else:
+                print("No categorical rows to insert")
+
+        finally:
+            self.db_connection.disconnect()
 
 
 def main():

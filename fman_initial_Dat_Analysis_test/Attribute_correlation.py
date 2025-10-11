@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import argparse
 
 # Add db-setup directory to path to import database_abc
 script_dir = Path(__file__).parent
@@ -68,6 +69,40 @@ def load_player_data(db_path: Path) -> pd.DataFrame:
     return df
 
 
+def load_player_data_by_position(db_path: Path, position: str) -> pd.DataFrame:
+    """
+    Load player data for players who have a specific position code in the positions table.
+
+    Args:
+        db_path: Path to SQLite database
+        position: position code (string or numeric) as stored in positions.position
+
+    Returns:
+        DataFrame with player attributes for players matching the position
+    """
+    db_conn = create_database_connection('sqlite', db_path=str(db_path))
+    try:
+        db_conn.connect()
+        query = """
+        SELECT p.name, p.age, p.acceleration, p.pace, p.passing, p.finishing,
+               p.tackling, p.vision, p.strength, p.stamina, p.technique, p.dribbling
+        FROM players p
+        JOIN positions ps ON ps.player_id = p.player_id
+        WHERE ps.position = ?
+        """
+        results = db_conn.execute_query(query, (str(position),))
+        columns = [
+            'name', 'age', 'acceleration', 'pace', 'passing',
+            'finishing', 'tackling', 'vision', 'strength',
+            'stamina', 'technique', 'dribbling'
+        ]
+        df = pd.DataFrame(results, columns=columns)
+    finally:
+        db_conn.disconnect()
+
+    return df
+
+
 def plot_attribute_distributions(df: pd.DataFrame, attributes: list):
     """Plot histograms for attribute distributions"""
     df[attributes].hist(bins=20, figsize=(14, 10), edgecolor="black")
@@ -85,45 +120,61 @@ def plot_correlation_heatmap(df: pd.DataFrame, attributes: list):
 
 
 def main():
-    """Main analysis function"""
-    # Path to database (relative to this script)
-    db_path = script_dir.parent / "db-setup" / "fm.db"
-    
+    """Main analysis function with optional per-position analysis"""
+    parser = argparse.ArgumentParser(description='FM2017 attribute analysis')
+    parser.add_argument('--position', help='Position code to filter by (e.g. 1, 2, etc.). If omitted, runs analysis on all players')
+    parser.add_argument('--db-path', help='Path to database file (overrides default)')
+    args = parser.parse_args()
+
+    # Path to database (relative to this script) or overridden by --db-path
+    if args.db_path:
+        db_path = Path(args.db_path)
+    else:
+        db_path = script_dir.parent / "db-setup" / "fm.db"
+
     if not db_path.exists():
         print(f"ERROR: Database not found at {db_path}")
         print("Please run setup_database.py first to create the database.")
         return 1
-    
+
     print("="*60)
     print("FM2017 Player Attributes Analysis")
     print("="*60)
     print(f"Database: {db_path}")
     print("="*60 + "\n")
-    
-    # Load player data
-    print("Loading player data from database...")
-    df = load_player_data(db_path)
-    print(f"✓ Loaded {len(df)} players\n")
-    
+
     # Define attributes to analyze
     attributes = [
         "acceleration", "pace", "passing", "finishing", "tackling",
         "vision", "strength", "stamina", "technique", "dribbling"
     ]
-    
-    # Display basic statistics
-    print("Basic Statistics:")
-    print(df[attributes].describe())
-    print()
-    
-    # Plot distributions
-    print("Generating attribute distribution plots...")
-    plot_attribute_distributions(df, attributes)
-    
-    # Plot correlation heatmap
-    print("Generating correlation heatmap...")
-    plot_correlation_heatmap(df, attributes)
-    
+
+    if args.position:
+        print(f"Loading player data for position: {args.position} ...")
+        df = load_player_data_by_position(db_path, args.position)
+        print(f"✓ Loaded {len(df)} players for position {args.position}\n")
+        if df.empty:
+            print("No players found for this position. Exiting.")
+            return 0
+        print("Basic Statistics:")
+        print(df[attributes].describe())
+        print()
+        print("Generating attribute distribution plots for position {0}...".format(args.position))
+        plot_attribute_distributions(df, attributes)
+        print("Generating correlation heatmap for position {0}...".format(args.position))
+        plot_correlation_heatmap(df, attributes)
+    else:
+        print("Loading player data from database (all players)...")
+        df = load_player_data(db_path)
+        print(f"✓ Loaded {len(df)} players\n")
+        print("Basic Statistics:")
+        print(df[attributes].describe())
+        print()
+        print("Generating attribute distribution plots (all players)...")
+        plot_attribute_distributions(df, attributes)
+        print("Generating correlation heatmap (all players)...")
+        plot_correlation_heatmap(df, attributes)
+
     print("\n Analysis complete!")
     return 0
 
