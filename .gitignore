@@ -1,0 +1,10 @@
+db-setup/fm.db
+db-setup/__pycache__/csv_importer.cpython-313.pyc
+fman_initial_Dat_Analysis_test/__pycache__/positions_separater.cpython-313.pyc
+db-setup/__pycache__/database_abc.cpython-313.pyc
+db-setup/fm.db
+db-setup/fm.db
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
